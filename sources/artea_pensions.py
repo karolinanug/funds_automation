@@ -131,103 +131,70 @@ class ArteaPensionsScraper(BaseScraper):
         raw_text = page.locator("body").inner_text(timeout=15000)
         return re.sub(r"\s+", " ", raw_text).strip()
 
-    def open_fund_selector(self, page):
-        """Open the fund selector with retries for slow/challenged page loads."""
-        for attempt in range(1, 5):
-            print(f"  Selector open attempt {attempt}/4...")
-            
-            # Dismiss cookie modal first and wait for it to go away
-            self.dismiss_cookie_modal(page)
-            page.wait_for_timeout(1000)
-            
-            # Verify modal is gone
-            try:
-                page.wait_for_selector(".onetrust-pc-dark-filter", state="hidden", timeout=3000)
-            except:
-                pass  # Modal might not be present
-            
+    def wait_for_page_ready(self, page):
+        """Wait for the page JS to finish rendering the custom-select widget."""
+        # Step 1: accept cookies so the widget is not blocked by the modal overlay
+        self.dismiss_cookie_modal(page)
+        
+        # Step 2: wait for the actual custom-select element to exist in DOM
+        # This is the key step missing in CI — the widget renders AFTER cookies accepted
+        print("    Waiting for fund selector to appear in DOM...")
+        try:
+            page.wait_for_selector(".custom-select-opener", timeout=30000)
+            print("    ✓ Fund selector found in DOM")
+        except Exception:
+            raise RuntimeError("Fund selector never appeared in DOM after 30s")
+        
+        # Step 3: make sure cookie overlay is fully gone
+        try:
+            page.wait_for_selector("#onetrust-consent-sdk", state="hidden", timeout=5000)
+        except Exception:
+            # Force-remove the overlay via JS
+            page.evaluate("document.getElementById('onetrust-consent-sdk')?.remove()")
             page.wait_for_timeout(300)
 
-            # Try CSS selectors
-            for selector in self.FUND_SELECTOR_CANDIDATES:
-                opener = page.locator(selector).first
-                if opener.count() > 0:
-                    try:
-                        opener.scroll_into_view_if_needed(timeout=5000)
-                        opener.wait_for(state="visible", timeout=5000)
-                        opener.click(timeout=5000, force=True)
-                        page.wait_for_timeout(600)
-                        print(f"    ✓ Selector opened with {selector}")
-                        return
-                    except Exception as e:
-                        print(f"    ✗ Failed with {selector}: {str(e)[:80]}")
-                        continue
-
-            # Try JavaScript fallback - find and click the selector element
+    def open_fund_selector(self, page):
+        """Click the fund dropdown to open it."""
+        for selector in self.FUND_SELECTOR_CANDIDATES:
+            opener = page.locator(selector).first
+            if opener.count() == 0:
+                continue
             try:
-                result = page.evaluate("""() => {
-                    // Remove or hide any overlays
-                    document.querySelectorAll('.onetrust-pc-dark-filter').forEach(el => el.remove());
-                    
-                    const opener = document.querySelector('.custom-select-opener[role="combobox"]') ||
-                                   document.querySelector('.custom-select-opener') ||
-                                   document.querySelector('[role="combobox"]');
-                    if (opener) {
-                        opener.click();
-                        return true;
-                    }
-                    return false;
-                }""")
-                if result:
-                    page.wait_for_timeout(600)
-                    print(f"    ✓ Selector opened via JavaScript")
-                    return
-                else:
-                    print(f"    ✗ JavaScript fallback: selector element not found in DOM")
+                opener.scroll_into_view_if_needed(timeout=5000)
+                opener.click(timeout=8000, force=True)
+                page.wait_for_timeout(500)
+                return
             except Exception as e:
-                print(f"    ✗ JavaScript fallback failed: {str(e)[:80]}")
+                print(f"    ✗ Failed with {selector}: {str(e)[:80]}")
+                continue
 
-            # Wait and retry
-            if attempt < 4:
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=15000)
-                    page.wait_for_timeout(1000)
-                except Exception:
-                    pass
+        # JavaScript fallback — removes any remaining overlay and clicks
+        result = page.evaluate("""() => {
+            document.getElementById('onetrust-consent-sdk')?.remove();
+            const opener = document.querySelector('.custom-select-opener[role="combobox"]') ||
+                           document.querySelector('.custom-select-opener') ||
+                           document.querySelector('[role="combobox"]');
+            if (opener) { opener.click(); return true; }
+            return false;
+        }""")
+        if result:
+            page.wait_for_timeout(500)
+            return
 
-        raise RuntimeError("Fund selector did not become clickable after 4 attempts.")
+        raise RuntimeError("Fund selector did not open.")
 
     def discover_fund_names(self, page) -> list:
         """Read fund names from visible options in the first selector."""
-        try:
-            self.open_fund_selector(page)
-        except Exception as e:
-            print(f"  Warning: Could not open selector: {e}")
-            print(f"  Attempting to extract fund names from page text...")
-            # Fallback: try to find fund names in the page text
-            try:
-                body_text = page.inner_text("body")
-                # Look for fund names mentioned in page
-                fund_pattern = r"Artea pensija [0-9]{4}-[0-9]{4} Index Plus"
-                matches = re.findall(fund_pattern, body_text)
-                if matches:
-                    return list(dict.fromkeys(matches))  # Remove duplicates
-            except Exception:
-                pass
-            return []
+        self.open_fund_selector(page)
 
         fund_names = []
-        try:
-            options = page.locator(".custom-select-option:visible")
-            for i in range(min(options.count(), 40)):
-                text = options.nth(i).inner_text().strip()
-                if text.startswith("Artea pensija") or text == "Artea pensijų turto išsaugojimo fondas":
-                    if text not in fund_names and text not in self.EXCLUDED_FUNDS:
-                        fund_names.append(text)
-        except Exception as e:
-            print(f"  Warning: Could not read options: {e}")
+        options = page.locator(".custom-select-option:visible")
+        for i in range(min(options.count(), 40)):
+            text = options.nth(i).inner_text().strip()
+            if text.startswith("Artea pensija") or text == "Artea pensijų turto išsaugojimo fondas":
+                if text not in fund_names and text not in self.EXCLUDED_FUNDS:
+                    fund_names.append(text)
 
-        # Close selector after discovery
         try:
             page.keyboard.press("Escape")
         except Exception:
@@ -282,18 +249,15 @@ class ArteaPensionsScraper(BaseScraper):
         results = []
 
         page.wait_for_load_state("domcontentloaded")
-        page.wait_for_timeout(1500)
         
-        # Aggressively dismiss cookie modal
-        for _ in range(3):
-            self.dismiss_cookie_modal(page)
-            page.wait_for_timeout(200)
+        # Wait for cookies + custom-select widget to render — THIS is what CI needs
+        self.wait_for_page_ready(page)
 
         fund_names = self.discover_fund_names(page)
         if not fund_names:
             print("  Warning: No fund names discovered")
             return results
-            
+
         print(f"Detected {len(fund_names)} Artea funds")
 
         for idx, fund_name in enumerate(fund_names, start=1):
