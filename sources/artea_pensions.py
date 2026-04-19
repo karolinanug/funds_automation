@@ -44,7 +44,12 @@ class ArteaPensionsScraper(BaseScraper):
         self._playwright = sync_playwright().start()
         self.browser = self._playwright.chromium.launch(
             headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",  # Fixes issues in low-memory environments
+                "--no-sandbox",  # Required in containers
+                "--disable-gpu",
+            ],
         )
         context = self.browser.new_context(
             user_agent=self.USER_AGENT,
@@ -65,25 +70,55 @@ class ArteaPensionsScraper(BaseScraper):
 
     def dismiss_cookie_modal(self, page):
         """Dismiss OneTrust modal/panel that can block clicks."""
+        # First pass: try common dismiss buttons
         selectors = [
             "button:has-text('Leisti visus')",
+            "button:has-text('Allow All')",
             "#onetrust-accept-btn-handler",
-            "button:has-text('Patvirtinti pasirinkimus')",
+            "button:has-text('Patvirt')",  # Patvirtinti...
             "#onetrust-reject-all-handler",
             "button:has-text('Uždaryti')",
             ".onetrust-close-btn-handler",
         ]
 
-        for _ in range(3):
+        for attempt in range(2):
             for selector in selectors:
                 try:
                     btn = page.locator(selector).first
                     if btn.count() > 0:
                         btn.click(timeout=2000, force=True)
-                        page.wait_for_timeout(200)
+                        page.wait_for_timeout(300)
+                        # Check if modal overlay is gone
+                        try:
+                            page.wait_for_selector(".onetrust-pc-dark-filter", state="hidden", timeout=2000)
+                        except:
+                            pass
                         return
                 except Exception:
                     pass
+            
+            # If first pass failed, try using evaluate to click the button directly
+            try:
+                result = page.evaluate("""() => {
+                    const btn = document.querySelector("button[id*='onetrust'][id*='accept']") ||
+                               Array.from(document.querySelectorAll('button'))
+                                 .find(b => b.innerText.includes('Leisti') || b.innerText.includes('Allow'));
+                    if (btn) {
+                        btn.click();
+                        return true;
+                    }
+                    return false;
+                }""")
+                if result:
+                    page.wait_for_timeout(500)
+                    try:
+                        page.wait_for_selector(".onetrust-pc-dark-filter", state="hidden", timeout=2000)
+                    except:
+                        pass
+                    return
+            except:
+                pass
+            
             page.wait_for_timeout(300)
 
     def extract_first_match(self, text: str, pattern: str) -> str:
@@ -98,52 +133,101 @@ class ArteaPensionsScraper(BaseScraper):
 
     def open_fund_selector(self, page):
         """Open the fund selector with retries for slow/challenged page loads."""
-        for attempt in range(1, 4):
+        for attempt in range(1, 5):
+            print(f"  Selector open attempt {attempt}/4...")
+            
+            # Dismiss cookie modal first and wait for it to go away
             self.dismiss_cookie_modal(page)
+            page.wait_for_timeout(1000)
+            
+            # Verify modal is gone
+            try:
+                page.wait_for_selector(".onetrust-pc-dark-filter", state="hidden", timeout=3000)
+            except:
+                pass  # Modal might not be present
+            
+            page.wait_for_timeout(300)
 
+            # Try CSS selectors
             for selector in self.FUND_SELECTOR_CANDIDATES:
                 opener = page.locator(selector).first
-                if opener.count() == 0:
-                    continue
+                if opener.count() > 0:
+                    try:
+                        opener.scroll_into_view_if_needed(timeout=5000)
+                        opener.wait_for(state="visible", timeout=5000)
+                        opener.click(timeout=5000, force=True)
+                        page.wait_for_timeout(600)
+                        print(f"    ✓ Selector opened with {selector}")
+                        return
+                    except Exception as e:
+                        print(f"    ✗ Failed with {selector}: {str(e)[:80]}")
+                        continue
 
-                try:
-                    opener.wait_for(state="visible", timeout=8000)
-                    opener.click(timeout=8000, force=True)
-                    page.wait_for_timeout(400)
-                    return
-                except Exception:
-                    continue
-
-            # If Cloudflare/anti-bot interstitial appears, wait a bit and retry.
+            # Try JavaScript fallback - find and click the selector element
             try:
-                body_text = page.inner_text("body", timeout=3000).lower()
-                if "just a moment" in body_text or "checking your browser" in body_text:
-                    page.wait_for_timeout(3000)
-            except Exception:
-                pass
+                result = page.evaluate("""() => {
+                    // Remove or hide any overlays
+                    document.querySelectorAll('.onetrust-pc-dark-filter').forEach(el => el.remove());
+                    
+                    const opener = document.querySelector('.custom-select-opener[role="combobox"]') ||
+                                   document.querySelector('.custom-select-opener') ||
+                                   document.querySelector('[role="combobox"]');
+                    if (opener) {
+                        opener.click();
+                        return true;
+                    }
+                    return false;
+                }""")
+                if result:
+                    page.wait_for_timeout(600)
+                    print(f"    ✓ Selector opened via JavaScript")
+                    return
+                else:
+                    print(f"    ✗ JavaScript fallback: selector element not found in DOM")
+            except Exception as e:
+                print(f"    ✗ JavaScript fallback failed: {str(e)[:80]}")
 
-            if attempt < 3:
+            # Wait and retry
+            if attempt < 4:
                 try:
-                    page.reload(wait_until="domcontentloaded", timeout=20000)
-                    page.wait_for_timeout(1500)
+                    page.reload(wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_timeout(1000)
                 except Exception:
                     pass
 
-        raise RuntimeError("Fund selector did not become clickable after retries.")
+        raise RuntimeError("Fund selector did not become clickable after 4 attempts.")
 
     def discover_fund_names(self, page) -> list:
         """Read fund names from visible options in the first selector."""
-        self.open_fund_selector(page)
+        try:
+            self.open_fund_selector(page)
+        except Exception as e:
+            print(f"  Warning: Could not open selector: {e}")
+            print(f"  Attempting to extract fund names from page text...")
+            # Fallback: try to find fund names in the page text
+            try:
+                body_text = page.inner_text("body")
+                # Look for fund names mentioned in page
+                fund_pattern = r"Artea pensija [0-9]{4}-[0-9]{4} Index Plus"
+                matches = re.findall(fund_pattern, body_text)
+                if matches:
+                    return list(dict.fromkeys(matches))  # Remove duplicates
+            except Exception:
+                pass
+            return []
 
         fund_names = []
-        options = page.locator(".custom-select-option:visible")
-        for i in range(min(options.count(), 40)):
-            text = options.nth(i).inner_text().strip()
-            if text.startswith("Artea pensija") or text == "Artea pensijų turto išsaugojimo fondas":
-                if text not in fund_names and text not in self.EXCLUDED_FUNDS:
-                    fund_names.append(text)
+        try:
+            options = page.locator(".custom-select-option:visible")
+            for i in range(min(options.count(), 40)):
+                text = options.nth(i).inner_text().strip()
+                if text.startswith("Artea pensija") or text == "Artea pensijų turto išsaugojimo fondas":
+                    if text not in fund_names and text not in self.EXCLUDED_FUNDS:
+                        fund_names.append(text)
+        except Exception as e:
+            print(f"  Warning: Could not read options: {e}")
 
-        # Close selector after discovery.
+        # Close selector after discovery
         try:
             page.keyboard.press("Escape")
         except Exception:
@@ -153,16 +237,36 @@ class ArteaPensionsScraper(BaseScraper):
 
     def select_fund(self, page, fund_name: str) -> bool:
         """Select a fund from currently opened selector."""
-        locator = page.locator(f".custom-select-option:visible:has-text('{fund_name}')")
-        if locator.count() == 0:
-            return False
-
         try:
-            locator.first.click(timeout=8000)
-            page.wait_for_timeout(1200)
-            return True
-        except Exception:
-            return False
+            locator = page.locator(f".custom-select-option:visible:has-text('{fund_name}')")
+            if locator.count() > 0:
+                locator.first.click(timeout=6000)
+                page.wait_for_timeout(1000)
+                return True
+        except Exception as e:
+            print(f"    CSS selector failed: {e}")
+
+        # JavaScript fallback: find and click the option
+        try:
+            result = page.evaluate(f"""(fundName) => {{
+                const options = document.querySelectorAll('.custom-select-option');
+                for (let opt of options) {{
+                    if (opt.innerText.includes(fundName)) {{
+                        opt.click();
+                        return true;
+                    }}
+                }}
+                return false;
+            }}""", fund_name)
+            if result:
+                page.wait_for_timeout(1000)
+                return True
+            else:
+                print(f"    JS fallback: option not found for {fund_name}")
+        except Exception as e:
+            print(f"    JS fallback failed: {e}")
+
+        return False
 
     def extract_metrics(self, page, fund_name: str) -> dict:
         text = self.normalize_text(page)
@@ -180,27 +284,37 @@ class ArteaPensionsScraper(BaseScraper):
         page.wait_for_load_state("domcontentloaded")
         page.wait_for_timeout(1500)
         
-        # Aggressively dismiss cookie modal before doing anything else
+        # Aggressively dismiss cookie modal
         for _ in range(3):
             self.dismiss_cookie_modal(page)
             page.wait_for_timeout(200)
 
         fund_names = self.discover_fund_names(page)
+        if not fund_names:
+            print("  Warning: No fund names discovered")
+            return results
+            
         print(f"Detected {len(fund_names)} Artea funds")
 
         for idx, fund_name in enumerate(fund_names, start=1):
             print(f"[{idx}/{len(fund_names)}] Processing: {fund_name}")
 
-            self.open_fund_selector(page)
-            selected = self.select_fund(page, fund_name)
-            if not selected:
-                print("  Could not select fund in dropdown.")
-                continue
+            try:
+                self.open_fund_selector(page)
+                selected = self.select_fund(page, fund_name)
+                if not selected:
+                    print("    Could not select fund in dropdown.")
+                    continue
 
-            row = self.extract_metrics(page, fund_name)
-            has_values = any(value for key, value in row.items() if key != "Fund name")
-            if has_values:
-                results.append(row)
+                row = self.extract_metrics(page, fund_name)
+                has_values = any(value for key, value in row.items() if key != "Fund name")
+                if has_values:
+                    results.append(row)
+                else:
+                    print("    No metrics extracted from page")
+            except Exception as e:
+                print(f"    Error processing fund: {e}")
+                continue
 
         return results
 
