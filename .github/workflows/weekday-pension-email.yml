@@ -9,7 +9,7 @@ on:
 jobs:
   run-workflow:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       GMAIL_USER: ${{ secrets.GMAIL_USER }}
       GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
@@ -22,6 +22,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: 'pip'
 
       - name: Decide whether this scheduled run should execute
         id: schedule_gate
@@ -53,12 +54,37 @@ jobs:
           python -m pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
+      - name: Verify environment variables
+        if: steps.schedule_gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          echo "Gmail User: ${GMAIL_USER:+***}"
+          echo "Gmail Password: ${GMAIL_PASSWORD:+***}"
+          echo "Recipient Email: ${RECIPIENT_EMAIL}"
+          if [ -z "$GMAIL_USER" ] || [ -z "$GMAIL_PASSWORD" ] || [ -z "$RECIPIENT_EMAIL" ]; then
+            echo "ERROR: Missing required environment variables"
+            exit 1
+          fi
+
       - name: Run scraper pipeline
         if: steps.schedule_gate.outputs.run == 'true'
         shell: bash
         run: |
           source .venv/bin/activate
           python run_daily_pipeline.py
+          if [ $? -ne 0 ]; then
+            echo "Pipeline failed - checking for generated files..."
+            ls -lah *.xlsx 2>/dev/null || echo "No Excel files found"
+            exit 1
+          fi
+
+      - name: Verify output files
+        if: steps.schedule_gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          echo "Checking for generated Excel files..."
+          ls -lah pension_data_combined_*.xlsx || echo "ERROR: No merged Excel file found"
+          ls -lah *_data_*.xlsx | head -10 || echo "No scraper output files found"
 
       - name: Upload generated workbook
         if: steps.schedule_gate.outputs.run == 'true' && success()
@@ -67,3 +93,21 @@ jobs:
           name: pension-workbook
           path: pension_data_combined_*.xlsx
           if-no-files-found: error
+
+      - name: Print pipeline logs on failure
+        if: steps.schedule_gate.outputs.run == 'true' && failure()
+        shell: bash
+        run: |
+          echo "=== PIPELINE FAILED ==="
+          echo "Checking for generated files..."
+          ls -lah *.xlsx 2>/dev/null || echo "No Excel files found"
+          echo ""
+          echo "Checking sources directory..."
+          ls -lah sources/ | head -20
+          echo ""
+          echo "Checking Python version..."
+          python --version
+          echo ""
+          echo "Checking Playwright installation..."
+          source .venv/bin/activate
+          python -c "import playwright; print(f'Playwright version: {playwright.__version__}')" || echo "Playwright not properly installed"

@@ -45,16 +45,19 @@ def discover_scrapers():
 
 def run_step(script_path):
     """
-    Run a single script/scraper.
+    Run a single script/scraper with a timeout.
     
     Args:
         script_path: Full path to the script to run
     """
     command = [str(get_python_executable()), str(script_path)]
     print(f"\n=== Running {script_path.name} ===")
-    result = subprocess.run(command, cwd=BASE_DIR, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"{script_path.name} failed with exit code {result.returncode}")
+    try:
+        result = subprocess.run(command, cwd=BASE_DIR, check=False, timeout=180)
+        if result.returncode != 0:
+            raise RuntimeError(f"{script_path.name} failed with exit code {result.returncode}")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{script_path.name} timed out after 180 seconds")
 
 
 def main():
