@@ -46,16 +46,27 @@ class LuminorPensionsScraper(BaseScraper):
     def scrape_data(self, page) -> list:
         results = []
 
-        page.wait_for_load_state("domcontentloaded")
-        self.dismiss_cookie_modal(page)
+        rows = []
+        for attempt in range(1, 4):
+            page.wait_for_load_state("domcontentloaded")
+            self.dismiss_cookie_modal(page)
 
-        # Luminor table can render asynchronously; wait for table cells instead of fixed sleeps.
-        try:
-            page.wait_for_selector("table td", timeout=30000)
-        except Exception:
-            # Retry once after an extra short wait in case cookie/UI overlays delayed rendering.
-            page.wait_for_timeout(2000)
-            page.wait_for_selector("table td", timeout=30000)
+            # Luminor table can render asynchronously and sometimes appears late on CI.
+            try:
+                page.wait_for_selector("table td", timeout=30000)
+            except Exception:
+                pass
+
+            rows = page.query_selector_all("table tr")
+            print(f"  Attempt {attempt}: found {len(rows)} table rows")
+
+            if len(rows) >= 8:
+                break
+
+            if attempt < 3:
+                print("  Luminor table not ready yet, retrying...")
+                page.wait_for_timeout(2500)
+                page.reload(wait_until="domcontentloaded", timeout=60000)
 
         # Extract date shown above the table
         data_date = None
@@ -69,7 +80,6 @@ class LuminorPensionsScraper(BaseScraper):
 
         print(f"  Data date: {data_date}")
 
-        rows = page.query_selector_all("table tr")
         print(f"  Found {len(rows)} table rows")
 
         for row in rows:

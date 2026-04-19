@@ -6,6 +6,7 @@ Table columns: fund name, 1d%, 1m%, 3m%, 1y%, 3y%, unit value, net assets, equit
 """
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -41,32 +42,53 @@ class GoindexPensionsScraper(BaseScraper):
     def scrape_data(self, page) -> list:
         results = []
 
-        page.wait_for_load_state("domcontentloaded")
-        page.wait_for_selector("table", timeout=30000)
-        self.dismiss_cookie_modal(page)
+        target_table = None
+        for attempt in range(1, 4):
+            page.wait_for_load_state("domcontentloaded")
+            self.dismiss_cookie_modal(page)
+
+            # Goindex table can render after initial load on CI runners.
+            try:
+                page.wait_for_selector("table td", timeout=30000)
+            except Exception:
+                pass
+
+            tables = page.query_selector_all("table")
+            print(f"  Attempt {attempt}: found {len(tables)} table(s)")
+
+            for table in tables:
+                txt = table.inner_text()
+                if "Goindex pensija" in txt or "Goindex turto išsaugojimo" in txt:
+                    target_table = table
+                    break
+
+            if target_table:
+                break
+
+            if attempt < 3:
+                print("  Goindex table not ready yet, retrying...")
+                page.wait_for_timeout(2500)
+                page.reload(wait_until="domcontentloaded", timeout=60000)
 
         # Date is shown as "Data: 2026.04.16"
         data_date = None
         try:
-            body = page.inner_text("body")
-            m = re.search(r"Data[:\s]+(\d{4})\.(\d{2})\.(\d{2})", body)
+            body = re.sub(r"\s+", " ", page.inner_text("body"))
+            m = re.search(r"Data[:\s]+(\d{4})[.-](\d{2})[.-](\d{2})", body)
             if m:
                 data_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+            else:
+                any_date = re.search(r"(\d{4})[.-](\d{2})[.-](\d{2})", body)
+                if any_date:
+                    data_date = f"{any_date.group(1)}-{any_date.group(2)}-{any_date.group(3)}"
         except Exception:
             pass
 
+        if data_date is None:
+            data_date = datetime.today().strftime("%Y-%m-%d")
+            print("  Date value not found on page; using today's date as fallback.")
+
         print(f"  Data date: {data_date}")
-
-        # Find the table containing Goindex fund rows
-        tables = page.query_selector_all("table")
-        print(f"  Found {len(tables)} tables")
-
-        target_table = None
-        for table in tables:
-            txt = table.inner_text()
-            if "Goindex pensija" in txt:
-                target_table = table
-                break
 
         if not target_table:
             print("  Could not find Goindex pension fund table.")

@@ -25,6 +25,11 @@ class ArteaPensionsScraper(BaseScraper):
         "Chrome/124.0.0.0 Safari/537.36"
     )
     EXCLUDED_FUNDS = {"Artea pensija 1954-1960 Index Plus"}
+    FUND_SELECTOR_CANDIDATES = [
+        ".custom-select-opener[role='combobox']",
+        ".custom-select-opener",
+        "[role='combobox']",
+    ]
 
     def __init__(self):
         super().__init__("artea_pensions")
@@ -88,10 +93,39 @@ class ArteaPensionsScraper(BaseScraper):
         return re.sub(r"\s+", " ", raw_text).strip()
 
     def open_fund_selector(self, page):
-        """Open the first combobox, which is the fund chooser."""
-        opener = page.locator(".custom-select-opener[role='combobox']").first
-        opener.click(timeout=30000)
-        page.wait_for_timeout(450)
+        """Open the fund selector with retries for slow/challenged page loads."""
+        for attempt in range(1, 4):
+            self.dismiss_cookie_modal(page)
+
+            for selector in self.FUND_SELECTOR_CANDIDATES:
+                opener = page.locator(selector).first
+                if opener.count() == 0:
+                    continue
+
+                try:
+                    opener.wait_for(state="visible", timeout=10000)
+                    opener.click(timeout=10000, force=True)
+                    page.wait_for_timeout(450)
+                    return
+                except Exception:
+                    continue
+
+            # If Cloudflare/anti-bot interstitial appears, wait a bit and retry.
+            try:
+                body_text = page.inner_text("body", timeout=4000).lower()
+                if "just a moment" in body_text or "checking your browser" in body_text:
+                    page.wait_for_timeout(5000)
+            except Exception:
+                pass
+
+            if attempt < 3:
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(2000)
+                except Exception:
+                    pass
+
+        raise RuntimeError("Fund selector did not become clickable after retries.")
 
     def discover_fund_names(self, page) -> list:
         """Read fund names from visible options in the first selector."""
