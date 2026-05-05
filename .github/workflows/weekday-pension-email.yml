@@ -94,6 +94,19 @@ jobs:
           path: pension_data_combined_*.xlsx
           if-no-files-found: error
 
+      - name: Send email with attachment
+        if: steps.schedule_gate.outputs.run == 'true' && success()
+        shell: bash
+        run: |
+          source .venv/bin/activate
+          python send_email.py
+          if [ $? -eq 0 ]; then
+            echo "Email sent successfully"
+          else
+            echo "Failed to send email"
+            exit 1
+          fi
+
       - name: Print pipeline logs on failure
         if: steps.schedule_gate.outputs.run == 'true' && failure()
         shell: bash

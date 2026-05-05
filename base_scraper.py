@@ -105,8 +105,17 @@ class BaseScraper(ABC):
                 print(f"No data parsed for {self.source_name}.")
                 return None
             
-            today = datetime.today().strftime('%Y-%m-%d')
-            filename = f"{self.source_name}_data_{today}.xlsx"
+            # Use data date from the 'Data' column if available, otherwise today's date
+            if 'Data' in df.columns:
+                unique_dates = df['Data'].dropna().unique()
+                if len(unique_dates) == 1 and unique_dates[0]:
+                    data_date = unique_dates[0]
+                else:
+                    data_date = datetime.today().strftime('%Y-%m-%d')
+            else:
+                data_date = datetime.today().strftime('%Y-%m-%d')
+            
+            filename = f"{self.source_name}_data_{data_date}.xlsx"
             
             filepath = self.save_to_excel(df, filename)
             

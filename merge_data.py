@@ -171,9 +171,17 @@ def main():
 
     print(f"  Combined: {len(df_combined)} rows, {len(df_combined.columns)} columns")
 
-    # Save to new Excel file
-    today = datetime.today().strftime("%Y-%m-%d")
-    output_file = f"pension_data_combined_{today}.xlsx"
+    # Use data date from the combined data for filename
+    if 'Data' in df_combined.columns:
+        unique_dates = df_combined['Data'].dropna().unique()
+        if len(unique_dates) == 1 and unique_dates[0]:
+            data_date = unique_dates[0]
+        else:
+            data_date = datetime.today().strftime("%Y-%m-%d")
+    else:
+        data_date = datetime.today().strftime("%Y-%m-%d")
+
+    output_file = f"pension_data_combined_{data_date}.xlsx"
 
     # Rename column before writing
     df_combined.rename(columns={"Fund name": "Fondo pavadinimas"}, inplace=True)

@@ -11,6 +11,7 @@ from email.utils import formatdate
 from pathlib import Path
 import sys
 import os
+import re
 
 
 def load_dotenv(dotenv_path=".env"):
@@ -36,18 +37,22 @@ load_dotenv()
 # Configuration
 GMAIL_USER = os.getenv("GMAIL_USER")  # e.g., your.email@gmail.com
 GMAIL_PASSWORD = os.getenv("GMAIL_PASSWORD")  # App-specific password
-RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL", "vytikmerk@gmail.com")
+RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL")
 
 
 def get_latest_excel_file():
     files = sorted(Path(".").glob("pension_data_combined_*.xlsx"))
     if not files:
-        return None
-    return max(files, key=lambda path: path.stat().st_mtime)
+        return None, None
+    latest_file = max(files, key=lambda path: path.stat().st_mtime)
+    # Extract date from filename: pension_data_combined_YYYY-MM-DD.xlsx
+    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', latest_file.name)
+    data_date = date_match.group(1).replace('-', '.') if date_match else "unknown"
+    return latest_file, data_date
 
 def send_email():
     """Send the Excel file via Gmail."""
-    excel_file = get_latest_excel_file()
+    excel_file, data_date = get_latest_excel_file()
     
     # Validate inputs
     if not GMAIL_USER:
@@ -67,6 +72,7 @@ def send_email():
     print(f"Sending {excel_file.name}...")
     print(f"  From: {GMAIL_USER}")
     print(f"  To: {RECIPIENT_EMAIL}")
+    print(f"  Data date: {data_date}")
     
     try:
         # Create message
@@ -74,21 +80,14 @@ def send_email():
         msg["From"] = GMAIL_USER
         msg["To"] = RECIPIENT_EMAIL
         msg["Date"] = formatdate(localtime=True)
-        msg["Subject"] = "Pension Fund Data - Swedbank"
+        msg["Subject"] = f"LT Pension Fund Data - {data_date}"
         
         # Body
-        body = """
+        body = f"""
 Hello,
-
-Please find attached the latest Swedbank pension fund data with performance metrics and fund sizes.
-
-This file contains:
-- Fund performance data (returns over various periods)
-- Fund sizes (Fondo dydis) in EUR
-- 8 pension funds with complete data
-
+Please find the attached latest data on Lithuanian pension funds for {data_date}, including performance metrics and fund sizes.
 Best regards,
-Pension Scraper
+Automated Python Script
 """
         msg.attach(MIMEText(body, "plain"))
         
