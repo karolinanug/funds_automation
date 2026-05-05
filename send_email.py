@@ -71,7 +71,7 @@ def send_email():
     
     print(f"Sending {excel_file.name}...")
     print(f"  From: {GMAIL_USER}")
-    print(f"  To: {RECIPIENT_EMAIL}")
+    print(f"  To: {RECIPIENT_EMAIL.replace(',', ', ')}")
     print(f"  Data date: {data_date}")
     
     try:
@@ -110,7 +110,7 @@ Automated Python Script
         server.send_message(msg)
         server.quit()
         
-        print(f"✅ Email sent successfully to {RECIPIENT_EMAIL}")
+        print(f"✅ Email sent successfully to {RECIPIENT_EMAIL.replace(',', ', ')}")
         
     except smtplib.SMTPAuthenticationError:
         print("❌ Error: Gmail login failed. Check your credentials.")
