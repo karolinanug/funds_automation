@@ -80,11 +80,17 @@ class SwedBankFundSizesScraper(BaseScraper):
                 
                 # Wait for details panel to appear
                 try:
-                    page.wait_for_selector("text=Fondo dydis", timeout=60000)
+                    # Wait for the page to navigate or content to load
+                    page.wait_for_load_state("networkidle", timeout=30000)
+                    page.wait_for_selector("text=Fondo dydis", timeout=30000)
                 except Exception as e:
                     print(f"  Warning: Details panel did not load: {e}")
-                    page.go_back()
-                    page.wait_for_selector("tbody tr", timeout=30000)
+                    print(f"  Current URL: {page.url}")
+                    try:
+                        page.go_back()
+                        page.wait_for_selector("tbody tr", timeout=30000)
+                    except Exception as back_err:
+                        print(f"  Failed to go back: {back_err}")
                     continue
                 
                 # Find all elements containing "Fondo dydis"
