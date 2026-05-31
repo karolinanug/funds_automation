@@ -9,9 +9,9 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 try:
-    from playwright_stealth import stealth_sync
+    from playwright_stealth import stealth
 except ImportError:
-    stealth_sync = None
+    stealth = None
 
 # Add parent directory to path so we can import base_scraper
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -66,14 +66,14 @@ class ArteaPensionsScraper(BaseScraper):
             },
         )
         self.page = context.new_page()
-        self.page.set_default_timeout(30000)
+        self.page.set_default_timeout(45000)
         
         # Apply stealth measures if available
-        if stealth_sync:
+        if stealth:
             print("  Applying Playwright stealth measures...")
-            stealth_sync(self.page)
+            stealth(self.page)
         else:
-            print("  Warning: playwright-stealth not installed. Install with: pip install playwright-stealth")
+            print("  Warning: playwright-stealth not installed or import failed. Install with: pip install playwright-stealth")
         
         self.page.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"

@@ -1,4 +1,4 @@
 playwright
-playwright-stealth
+playwright-stealth==2.0.3
 pandas
 openpyxl
